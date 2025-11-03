@@ -36,7 +36,6 @@ def test_filter_stocks_mc_dc(nome_ct, entrada_value, saida_esperada_str, mocker)
     
     qs_original = MagicMock(name="queryset_original")
     
-    # Patch com caminho correto para as funções
     mocker.patch(
         "saleor.graphql.product.filters.product_helpers.filter_warehouses", 
         return_value="chamou_filter_warehouses"
