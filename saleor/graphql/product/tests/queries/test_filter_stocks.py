@@ -1,7 +1,8 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from saleor.graphql.product.filters.product_helpers import filter_stocks
+
 
 @pytest.mark.parametrize(
     "nome_ct, entrada_value, saida_esperada_str",
@@ -35,12 +36,13 @@ def test_filter_stocks_mc_dc(nome_ct, entrada_value, saida_esperada_str, mocker)
     
     qs_original = MagicMock(name="queryset_original")
     
+    # Patch com caminho correto para as funções
     mocker.patch(
-        "filter_warehouses", 
+        "saleor.graphql.product.filters.product_helpers.filter_warehouses", 
         return_value="chamou_filter_warehouses"
     )
     mocker.patch(
-        "filter_quantity", 
+        "saleor.graphql.product.filters.product_helpers.filter_quantity", 
         return_value="chamou_filter_quantity"
     )
 
