@@ -146,6 +146,18 @@ class CheckoutInfo:
     _cached_built_in_shipping_methods: list[ShippingMethodData] | None = None
     _cached_external_shipping_methods: list[ShippingMethodData] | None = None
 
+    def __repr__(self) -> str:
+        user_id = self.user.pk if self.user else None
+        num_lines = len(self.lines)
+        return (
+            f"CheckoutInfo("
+            f"checkout_id={self.checkout.pk}, "
+            f"user_id={user_id}, "
+            f"channel={self.channel.slug}, "
+            f"num_lines={num_lines}"
+            f")"
+        )
+
     def get_all_shipping_methods(
         self,
     ) -> list["ShippingMethodData"]:
