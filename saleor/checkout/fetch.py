@@ -63,6 +63,16 @@ class CheckoutLineInfo(LineInfo):
 
     tax_class: Optional["TaxClass"] = None
 
+    def __repr__(self) -> str:
+        return (
+            f"CheckoutLineInfo("
+            f"line_id={self.line.pk}, "
+            f"variant_id={self.variant.pk}, "
+            f"product_id={self.product.pk}, "
+            f"quantity={self.line.quantity}"
+            f")"
+        )
+
     @cached_property
     def variant_discounted_price(self) -> Money:
         """Return the discounted variant price.
