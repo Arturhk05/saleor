@@ -366,6 +366,13 @@ class ShippingMethodInfo(DeliveryMethodBase):
     shipping_address: Optional["Address"]
     store_as_customer_address: bool = True
 
+    def __repr__(self) -> str:
+        return (
+            f"ShippingMethodInfo("
+            f"delivery_method={self.delivery_method!r}"
+            f")"
+        )
+
     @property
     def delivery_method_name(self) -> dict[str, str | None]:
         return {"shipping_method_name": str(self.delivery_method.name)}
