@@ -1,6 +1,8 @@
 import pytest
 
-from ..fetch import CheckoutLineInfo, CheckoutInfo
+from ..fetch import CheckoutLineInfo, CheckoutInfo, ShippingMethodInfo
+from ...shipping.interface import ShippingMethodData
+from prices import Money
 
 def test_checkout_line_info_repr_is_reduced(checkout_with_item):
     checkout_line = checkout_with_item.lines.first()
@@ -91,3 +93,66 @@ def test_checkout_info_repr_is_reduced(checkout_with_item, customer_user, all_pl
     assert "<" not in repr_str or ">" not in repr_str
 
     assert len(repr_str) < 300, "repr should be concise and reduced"
+
+def test_shipping_method_data_repr_is_reduced():
+    shipping_method_data = ShippingMethodData(
+        id="1",
+        name="Standard Shipping",
+        price=Money(10.00, "USD"),
+        description="Standard shipping method",
+        type="shipping",
+        maximum_order_price=Money(1000, "USD"),
+        minimum_order_price=Money(0, "USD"),
+        maximum_delivery_days=7,
+        minimum_delivery_days=2,
+        metadata={"key1": "value1", "key2": "value2"},
+        private_metadata={"private_key": "private_value"},
+        active=True,
+        message="",
+    )
+
+    repr_str = repr(shipping_method_data)
+
+    assert "ShippingMethodData" in repr_str
+    assert "id=1" in repr_str or "id='1'" in repr_str
+    assert "Standard Shipping" in repr_str or "name=" in repr_str
+    assert "10" in repr_str or "USD" in repr_str
+    assert "<" not in repr_str or ">" not in repr_str
+    
+    assert len(repr_str) < 250, "repr should be concise and reduced"
+
+
+def test_shipping_method_info_repr_is_reduced(address):
+    shipping_method_data = ShippingMethodData(
+        id="2",
+        name="Express Shipping",
+        price=Money(25.00, "USD"),
+        description="Express shipping option",
+        type="shipping",
+        maximum_order_price=Money(5000, "USD"),
+        minimum_order_price=Money(0, "USD"),
+        maximum_delivery_days=3,
+        minimum_delivery_days=1,
+        metadata={"speed": "fast"},
+        private_metadata={"internal_code": "EXP001"},
+        active=True,
+        message="Fast delivery",
+    )
+
+    shipping_method_info = ShippingMethodInfo(
+        delivery_method=shipping_method_data,
+        shipping_address=address,
+        store_as_customer_address=True,
+    )
+
+    repr_str = repr(shipping_method_info)
+
+    assert "ShippingMethodInfo" in repr_str
+    assert "id=" in repr_str
+    assert "2" in repr_str
+    
+    assert "Express Shipping" in repr_str or "name=" in repr_str
+    
+    assert "<" not in repr_str or ">" not in repr_str
+    
+    assert len(repr_str) < 250, "repr should be concise and reduced"
