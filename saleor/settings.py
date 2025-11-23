@@ -31,7 +31,10 @@ from .account.i18n_rules_override import i18n_rules_override
 from .core.db.patch import patch_db
 from .core.languages import LANGUAGES as CORE_LANGUAGES
 from .core.rlimit import validate_and_set_rlimit
-from .core.schedules import initiated_promotion_webhook_schedule
+from .core.schedules import (
+    initiated_checkout_automatic_completion_schedule,
+    initiated_promotion_webhook_schedule,
+)
 from .graphql.executor import patch_executor
 from .graphql.promise import patch_promise
 from .patch_local import patch_local
@@ -615,6 +618,12 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_BROKER_URL = (
     os.environ.get("CELERY_BROKER_URL", os.environ.get("CLOUDAMQP_URL")) or ""
 )
+
+# Mitigation of https://github.com/celery/kombu/issues/2400
+# Allows passing MessageGroupId for non-FIFO queues
+if CELERY_BROKER_URL.startswith("sqs://"):
+    CELERY_BROKER_TRANSPORT = "saleor.core.sqs.Transport"
+
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", None)
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TASK_ALWAYS_EAGER = not CELERY_BROKER_URL
@@ -698,6 +707,11 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": datetime.timedelta(seconds=BEAT_UPDATE_SEARCH_SEC),
         "options": {"expires": BEAT_UPDATE_SEARCH_EXPIRE_AFTER_SEC},
     },
+    "update-pages-search-vectors": {
+        "task": "saleor.page.tasks.update_pages_search_vector_task",
+        "schedule": datetime.timedelta(seconds=BEAT_UPDATE_SEARCH_SEC),
+        "options": {"expires": BEAT_UPDATE_SEARCH_EXPIRE_AFTER_SEC},
+    },
     "expire-orders": {
         "task": "saleor.order.tasks.expire_orders_task",
         "schedule": BEAT_EXPIRE_ORDERS_AFTER_TIMEDELTA,
@@ -722,6 +736,12 @@ CELERY_BEAT_SCHEDULE = {
         "task": "saleor.product.tasks.recalculate_discounted_price_for_products_task",
         "schedule": datetime.timedelta(seconds=BEAT_PRICE_RECALCULATION_SCHEDULE),
         "options": {"expires": BEAT_PRICE_RECALCULATION_SCHEDULE_EXPIRE_AFTER_SEC},
+    },
+    "checkout-automatic-completion": {
+        # Scheduled task that runs every 60 seconds to check for checkout
+        # readiness for automatic completion.
+        "task": "saleor.checkout.tasks.trigger_automatic_checkout_completion_task",
+        "schedule": initiated_checkout_automatic_completion_schedule,
     },
 }
 
@@ -932,6 +952,13 @@ CHECKOUT_TTL_BEFORE_RELEASING_FUNDS = datetime.timedelta(
 TRANSACTION_BATCH_FOR_RELEASING_FUNDS = os.environ.get(
     "TRANSACTION_BATCH_FOR_RELEASING_FUNDS", 60
 )
+# Oldest checkout modification for automatic completion. Older checkouts will not be
+# processed.
+AUTOMATIC_CHECKOUT_COMPLETION_OLDEST_MODIFIED = datetime.timedelta(
+    seconds=parse(
+        os.environ.get("AUTOMATIC_CHECKOUT_COMPLETION_OLDEST_MODIFIED", "30 days")
+    )
+)
 
 
 # The maximum SearchVector expression count allowed per index SQL statement
@@ -951,6 +978,9 @@ PRODUCT_MAX_INDEXED_ATTRIBUTES = 1000
 PRODUCT_MAX_INDEXED_ATTRIBUTE_VALUES = 100
 PRODUCT_MAX_INDEXED_VARIANTS = 1000
 
+# Maximum related objects that can be indexed in a page
+PAGE_MAX_INDEXED_ATTRIBUTES = 1000
+PAGE_MAX_INDEXED_ATTRIBUTE_VALUES = 100
 
 # Patch SubscriberExecutionContext class from `graphql-core-legacy` package
 # to fix bug causing not returning errors for subscription queries.
@@ -1037,6 +1067,11 @@ ORDER_RULES_LIMIT = os.environ.get("ORDER_RULES_LIMIT", 100)
 # The max number of gits assigned to promotion rule
 GIFTS_LIMIT_PER_RULE = os.environ.get("GIFTS_LIMIT_PER_RULE", 500)
 
+# Default automatic completion delay for checkout in minutes.
+DEFAULT_AUTOMATIC_CHECKOUT_COMPLETION_DELAY = int(
+    os.environ.get("AUTOMATIC_CHECKOUT_COMPLETION_DELAY", 30)
+)
+
 # Whether to enable the comparison of pre-save and post-save webhook payloads in
 # mutations, in order to limit sending webhooks where the payload has not changed as
 # a result of the mutation. Note: this works only for subscriptions webhooks; legacy
@@ -1082,6 +1117,11 @@ TELEMETRY_METER_CLASS = "saleor.core.telemetry.metric.Meter"
 # Whether to raise or log exceptions for telemetry unit conversion errors
 # Disabled by default to prevent disruptions caused by unexpected unit conversion issues
 TELEMETRY_RAISE_UNIT_CONVERSION_ERRORS = False
+# The default threshold for slow operations is set to 1 second, based on production monitoring data.
+# Only a small percentage of queries are expected to exceed this threshold.
+TELEMETRY_SLOW_GRAPHQL_OPERATION_THRESHOLD = float(
+    os.environ.get("TELEMETRY_SLOW_GRAPHQL_OPERATION_THRESHOLD", 1.0)
+)
 
 # Additional hash suffix, allowing to invalidate cached schema. In production usually we want this to be empty.
 # For development envs, where schema may change often, it may be convenient to set it to e.g. commit hash value.

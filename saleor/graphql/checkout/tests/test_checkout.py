@@ -11,6 +11,7 @@ from django.test import override_settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django_countries.fields import Country
+from freezegun import freeze_time
 from measurement.measures import Weight
 from prices import Money
 
@@ -2949,14 +2950,16 @@ def test_checkout_prices_with_checkout_updated_during_price_recalculation(
     }
     total_before_recalculation = checkout.total
     lines_before_recalculation = list(checkout.lines.all())
+    freeze_time_str = "2024-01-01T12:00:00+00:00"
 
     # when
     def modify_checkout(*args, **kwargs):
-        with allow_writer():
-            checkout_to_modify = Checkout.objects.get(pk=checkout.pk)
-            checkout_to_modify.lines.update(quantity=F("quantity") + 1)
-            checkout_to_modify.email = expected_email
-            checkout_to_modify.save(update_fields=["email", "last_change"])
+        with freeze_time(freeze_time_str):
+            with allow_writer():
+                checkout_to_modify = Checkout.objects.get(pk=checkout.pk)
+                checkout_to_modify.lines.update(quantity=F("quantity") + 1)
+                checkout_to_modify.email = expected_email
+                checkout_to_modify.save(update_fields=["email", "last_change"])
 
     with race_condition.RunAfter(
         "saleor.checkout.calculations._calculate_and_add_tax", modify_checkout
@@ -2976,6 +2979,7 @@ def test_checkout_prices_with_checkout_updated_during_price_recalculation(
 
     checkout.refresh_from_db()
     assert checkout.email == expected_email
+    assert checkout.last_change.isoformat() == freeze_time_str
 
     # Confirm that total price hasn't changed in database due to recalculation
     assert checkout.total == total_before_recalculation
@@ -3689,7 +3693,6 @@ def test_checkout_prices_variant_listing_price_changed(
         checkout_info,
         manager,
         lines,
-        checkout_with_item.shipping_address,
         force_update=True,
     )
 
@@ -3768,11 +3771,11 @@ def test_checkout_prices_expired_variant_listing_price_changed(
         checkout_info,
         manager,
         lines,
-        checkout_with_item.shipping_address,
         force_update=True,
     )
     checkout_with_item.price_expiration = timezone.now() - datetime.timedelta(days=1)
-    checkout_with_item.save(update_fields=["price_expiration"])
+    checkout_with_item.discount_expiration = timezone.now() - datetime.timedelta(days=1)
+    checkout_with_item.save(update_fields=["price_expiration", "discount_expiration"])
 
     line = lines[0]
     listing = line.variant.channel_listings.get(
@@ -3974,7 +3977,6 @@ def test_query_checkouts_do_not_trigger_sync_tax_webhooks(
     mocked_fetch_checkout_prices_if_expired.assert_called_once_with(
         checkout_info=mock.ANY,
         allow_sync_webhooks=False,
-        address=None,
         database_connection_name=mock.ANY,
         force_update=False,
         lines=lines,
@@ -4021,13 +4023,11 @@ def test_query_checkouts_calculate_flat_taxes(
         mock.ANY,
         lines,
         tax_configuration_flat_rates.prices_entered_with_tax,
-        None,
         database_connection_name=mock.ANY,
     )
     mocked_fetch_checkout_prices_if_expired.assert_called_once_with(
         checkout_info=mock.ANY,
         allow_sync_webhooks=False,
-        address=None,
         database_connection_name=mock.ANY,
         force_update=False,
         lines=lines,
@@ -4123,7 +4123,6 @@ def test_query_checkout_lines_do_not_trigger_sync_tax_webhooks(
     mocked_fetch_checkout_prices_if_expired.assert_called_once_with(
         checkout_info=mock.ANY,
         allow_sync_webhooks=False,
-        address=None,
         database_connection_name=mock.ANY,
         force_update=False,
         lines=lines,
@@ -4166,13 +4165,11 @@ def test_query_checkout_lines_calculate_flat_taxes(
         mock.ANY,
         lines,
         tax_configuration_flat_rates.prices_entered_with_tax,
-        None,
         database_connection_name=mock.ANY,
     )
     mocked_fetch_checkout_prices_if_expired.assert_called_once_with(
         checkout_info=mock.ANY,
         allow_sync_webhooks=False,
-        address=None,
         database_connection_name=mock.ANY,
         force_update=False,
         lines=lines,

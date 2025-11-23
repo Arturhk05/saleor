@@ -42,6 +42,7 @@ from ...permission.auth_filters import AuthorizationFilters, is_app, is_staff_us
 from ...permission.enums import (
     AccountPermissions,
     AppPermission,
+    CheckoutPermissions,
     OrderPermissions,
     PaymentPermissions,
     ProductPermissions,
@@ -2556,6 +2557,7 @@ class Order(SyncWebhookControlContextModelObjectType[ModelObjectType[models.Orde
                 AccountPermissions.MANAGE_USERS,
                 OrderPermissions.MANAGE_ORDERS,
                 PaymentPermissions.HANDLE_PAYMENTS,
+                CheckoutPermissions.HANDLE_TAXES,
             )
             return user
 
@@ -2581,10 +2583,16 @@ class Order(SyncWebhookControlContextModelObjectType[ModelObjectType[models.Orde
                     if prices_entered_with_tax
                     else order.shipping_price_net
                 )
+                shipping_method_metadata = order.shipping_method_metadata or {}
+                shipping_method_private_metadata = (
+                    order.shipping_method_private_metadata or {}
+                )
                 return ShippingMethodData(
                     id=external_app_shipping_id,
                     name=order.shipping_method_name,
                     price=price,
+                    metadata=shipping_method_metadata,
+                    private_metadata=shipping_method_private_metadata,
                 )
 
             return tax_config.then(with_tax_config)
@@ -2610,9 +2618,27 @@ class Order(SyncWebhookControlContextModelObjectType[ModelObjectType[models.Orde
                 listing, tax_class = data
                 if not listing:
                     return None
-                return convert_to_shipping_method_data(
-                    shipping_method, listing, tax_class
+                shipping_method_data = convert_to_shipping_method_data(
+                    shipping_method,
+                    listing,
+                    tax_class,
                 )
+                if order.status == OrderStatus.DRAFT:
+                    # For draft orders, we always use the metadata stored on the order itself.
+                    return shipping_method_data
+
+                # TODO (ENG-1053): Remove this fallback logic after migration period.
+                # When shipping_method_metadata is None, we fall back to the shipping method's
+                # metadata from the assigned shipping method for backward compatibility reasons.
+                # This ensures that orders created before the metadata was stored directly on
+                # the order will still have access to the shipping method's metadata.
+                if order.shipping_method_metadata is not None:
+                    shipping_method_data.metadata = order.shipping_method_metadata
+                if order.shipping_method_private_metadata is not None:
+                    shipping_method_data.private_metadata = (
+                        order.shipping_method_private_metadata
+                    )
+                return shipping_method_data
 
             return Promise.all([listing, tax_class]).then(calculate_price)
 

@@ -6,6 +6,7 @@ import graphene
 import pytest
 from django.db import transaction
 from django.db.models.aggregates import Sum
+from django.test import override_settings
 from django.utils import timezone
 from prices import Money, TaxedMoney
 
@@ -15,6 +16,7 @@ from .....checkout.error_codes import OrderCreateFromCheckoutErrorCode
 from .....checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from .....checkout.models import Checkout, CheckoutLine
 from .....checkout.payment_utils import update_checkout_payment_statuses
+from .....checkout.utils import PRIVATE_META_APP_SHIPPING_ID
 from .....core.taxes import TaxDataError, TaxError, zero_money, zero_taxed_money
 from .....discount import DiscountType, DiscountValueType, RewardValueType
 from .....discount.models import CheckoutLineDiscount, OrderLineDiscount
@@ -25,6 +27,7 @@ from .....order.models import Fulfillment, Order
 from .....payment.model_helpers import get_subtotal
 from .....plugins.manager import PluginsManager, get_plugins_manager
 from .....product.models import ProductChannelListing, ProductVariantChannelListing
+from .....tests import race_condition
 from .....warehouse.models import Reservation, Stock, WarehouseClickAndCollectOption
 from .....warehouse.tests.utils import get_available_quantity_for_stock
 from ....tests.utils import assert_no_permission, get_graphql_content
@@ -49,6 +52,24 @@ mutation orderCreateFromCheckout(
                 }
                 gross {
                     amount
+                }
+            }
+            shippingMethod {
+                id
+                name
+                metadata {
+                    key
+                    value
+                }
+            }
+            deliveryMethod {
+                ... on ShippingMethod {
+                    id
+                    name
+                    metadata {
+                        key
+                        value
+                    }
                 }
             }
         }
@@ -2840,3 +2861,256 @@ def test_order_from_checkout_order_status_changed_after_creation(
     order = data["order"]
     assert order
     assert order["status"] == OrderStatus.UNFULFILLED.upper()
+
+
+@pytest.mark.integration
+@override_settings(
+    PLUGINS=[
+        "saleor.plugins.webhook.plugin.WebhookPlugin",
+    ]
+)
+@patch("saleor.webhook.transport.synchronous.transport.send_webhook_request_sync")
+def test_order_from_checkout_with_external_shipping(
+    mocked_sync_webhook,
+    app_api_client,
+    permission_handle_checkouts,
+    checkout_with_item,
+    address,
+    shipping_app,
+):
+    # given
+    external_shipping_method_id = "ABC"
+    external_shipping_name = "Provider - Economy"
+    external_shipping_metadata_key = "external_metadata_key"
+    external_shipping_metadata_value = "external_metadata_value"
+    external_shipping_metadata = {
+        external_shipping_metadata_key: external_shipping_metadata_value
+    }
+    graphql_external_method_id = graphene.Node.to_global_id(
+        "app", f"{shipping_app.id}:{external_shipping_method_id}"
+    )
+    mock_json_response = [
+        {
+            "id": external_shipping_method_id,
+            "name": external_shipping_name,
+            "amount": "10",
+            "currency": "USD",
+            "maximum_delivery_days": "7",
+            "metadata": external_shipping_metadata,
+        }
+    ]
+    mocked_sync_webhook.return_value = mock_json_response
+
+    checkout = checkout_with_item
+    checkout.external_shipping_method_id = graphql_external_method_id
+    checkout.shipping_method_name = external_shipping_name
+    checkout.shipping_address = address
+    checkout.billing_address = address
+    checkout.save()
+
+    # when
+    variables = {"id": graphene.Node.to_global_id("Checkout", checkout.pk)}
+    response = app_api_client.post_graphql(
+        MUTATION_ORDER_CREATE_FROM_CHECKOUT,
+        variables,
+        permissions=[permission_handle_checkouts],
+    )
+    content = get_graphql_content(response)
+
+    # then
+    data = content["data"]["orderCreateFromCheckout"]
+    assert not data["errors"]
+    order = Order.objects.first()
+    assert order.shipping_method_name == external_shipping_name
+    assert (
+        order.private_metadata[PRIVATE_META_APP_SHIPPING_ID]
+        == graphql_external_method_id
+    )
+    assert data["order"]["shippingMethod"]["name"] == external_shipping_name
+    assert order.shipping_method_metadata == external_shipping_metadata
+    expected_metadata = [
+        {
+            "key": external_shipping_metadata_key,
+            "value": external_shipping_metadata_value,
+        }
+    ]
+    assert data["order"]["shippingMethod"]["metadata"] == expected_metadata
+    assert data["order"]["deliveryMethod"]["metadata"] == expected_metadata
+
+
+@pytest.mark.integration
+@override_settings(
+    PLUGINS=[
+        "saleor.plugins.webhook.plugin.WebhookPlugin",
+    ]
+)
+@patch("saleor.webhook.transport.synchronous.transport.send_webhook_request_sync")
+def test_order_from_checkout_with_external_shipping_private_metadata(
+    mocked_sync_webhook,
+    app_api_client,
+    permission_handle_checkouts,
+    permission_manage_shipping,
+    checkout_with_item,
+    address,
+    shipping_app,
+):
+    mutation_order_create_from_checkout_with_private_metadata = """
+    mutation orderCreateFromCheckout(
+            $id: ID!, $metadata: [MetadataInput!], $privateMetadata: [MetadataInput!]
+        ){
+        orderCreateFromCheckout(
+                id: $id, metadata: $metadata, privateMetadata: $privateMetadata
+            ){
+            order{
+                id
+                shippingMethod {
+                    id
+                    name
+                    privateMetadata {
+                        key
+                        value
+                    }
+                }
+                deliveryMethod {
+                    ... on ShippingMethod {
+                        id
+                        name
+                        privateMetadata {
+                            key
+                            value
+                        }
+                    }
+                }
+            }
+            errors{
+                field
+                message
+                code
+                variants
+            }
+        }
+    }
+    """
+
+    # given
+    external_shipping_method_id = "ABC"
+    external_shipping_name = "External provider - Economy"
+    external_shipping_private_metadata_key = "external_private_metadata_key"
+    external_shipping_private_metadata_value = "external_private_metadata_value"
+    external_shipping_private_metadata = {
+        external_shipping_private_metadata_key: external_shipping_private_metadata_value
+    }
+
+    graphql_external_method_id = graphene.Node.to_global_id(
+        "app", f"{shipping_app.id}:{external_shipping_method_id}"
+    )
+    mock_json_response = [
+        {
+            "id": external_shipping_method_id,
+            "name": external_shipping_name,
+            "amount": "10",
+            "currency": "USD",
+            "maximum_delivery_days": "7",
+            "private_metadata": external_shipping_private_metadata,
+        }
+    ]
+    mocked_sync_webhook.return_value = mock_json_response
+
+    checkout = checkout_with_item
+    checkout.external_shipping_method_id = graphql_external_method_id
+    checkout.shipping_method_name = external_shipping_name
+    checkout.shipping_address = address
+    checkout.billing_address = address
+    checkout.save()
+
+    # when
+    variables = {"id": graphene.Node.to_global_id("Checkout", checkout.pk)}
+    response = app_api_client.post_graphql(
+        mutation_order_create_from_checkout_with_private_metadata,
+        variables,
+        permissions=[permission_handle_checkouts, permission_manage_shipping],
+    )
+    content = get_graphql_content(response)
+
+    # then
+    data = content["data"]["orderCreateFromCheckout"]
+    assert not data["errors"]
+    order = Order.objects.first()
+    assert data["order"]["shippingMethod"]["name"] == external_shipping_name
+    expected_private_metadata = [
+        {
+            "key": external_shipping_private_metadata_key,
+            "value": external_shipping_private_metadata_value,
+        }
+    ]
+    assert order.shipping_method_private_metadata == external_shipping_private_metadata
+    assert (
+        data["order"]["shippingMethod"]["privateMetadata"] == expected_private_metadata
+    )
+    assert (
+        data["order"]["deliveryMethod"]["privateMetadata"] == expected_private_metadata
+    )
+
+
+@pytest.mark.integration
+def test_order_from_checkout_builtin_shipping_method_metadata_denormalization(
+    app_api_client,
+    permission_handle_checkouts,
+    checkout_with_item,
+    shipping_method,
+    address,
+):
+    # given
+    checkout = checkout_with_item
+    checkout.shipping_address = address
+    checkout.billing_address = address
+    checkout.shipping_method = shipping_method
+    checkout.save()
+
+    expected_metadata_key = "AnyKey"
+    expected_metadata_value = "AnyValue"
+    expected_shipping_metadata = {
+        expected_metadata_key: expected_metadata_value,
+    }
+    shipping_method.metadata = expected_shipping_metadata
+    shipping_method.save()
+    variables = {"id": graphene.Node.to_global_id("Checkout", checkout.pk)}
+
+    # when
+    def clear_shipping_metadata(*args, **kwargs):
+        # Clear shipping method metadata to ensure data is denormalized properly
+        shipping_method.metadata = {}
+        shipping_method.save()
+
+    with race_condition.RunAfter(
+        "saleor.graphql.checkout.mutations.order_create_from_checkout.create_order_from_checkout",
+        clear_shipping_metadata,
+    ):
+        response = app_api_client.post_graphql(
+            MUTATION_ORDER_CREATE_FROM_CHECKOUT,
+            variables,
+            permissions=[permission_handle_checkouts],
+        )
+    content = get_graphql_content(response)
+
+    # then
+    data = content["data"]["orderCreateFromCheckout"]
+    assert not data["errors"]
+    order = Order.objects.first()
+    assert order.shipping_method.pk == shipping_method.pk
+
+    expected_metadata = [
+        {
+            "key": expected_metadata_key,
+            "value": expected_metadata_value,
+        }
+    ]
+    assert data["order"]["shippingMethod"]["metadata"] == expected_metadata
+    assert data["order"]["deliveryMethod"]["metadata"] == expected_metadata
+
+    # Ensure shipping metadata was denormalized properly
+    assert order.shipping_method_metadata == expected_shipping_metadata
+
+    # Ensure shipping method metadata in DB was cleared after denormalization
+    shipping_method.refresh_from_db()
+    assert shipping_method.metadata == {}
